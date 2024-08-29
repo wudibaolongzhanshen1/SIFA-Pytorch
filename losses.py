@@ -36,14 +36,14 @@ def _softmax_weighted_loss(logits, gt, n_class):
     """
     softmaxpred = F.softmax(logits, dim=1)
     gt = F.one_hot(gt, num_classes=n_class).permute(0, 3, 1, 2).float()
-    raw_loss = 0
+    raw_loss = torch.tensor(0)
     for i in range(5):
         gti = gt[:, i, :, :]
         predi = softmaxpred[:, i, :, :]
         weighted = 1 - (torch.sum(gti) / torch.sum(gt))
-        raw_loss += -1.0 * weighted * gti * torch.log(torch.clamp(predi, min=0.005, max=1.0))
+        raw_loss = raw_loss +(-1.0 * weighted * gti * torch.log(torch.clamp(predi, min=0.005, max=1.0)))
 
-    loss = torch.mean(torch.tensor(raw_loss))
+    loss = torch.mean(raw_loss)
     return loss
 
 
@@ -61,7 +61,23 @@ Dice系数:
     该指标的取值范围为[0, 1]，值越大表示两个样本越相似
     该指标常用于图像分割任务中
     Dice系数计算用于二分类，多分类问题只需要转变为onehot编码再对每个类求Dice系数即可
+    
+    改进后的Dice，可微分
 """
+def _dice_loss_fun(pred, target, num_classes):
+    """
+    pred: softmax 输出 (batch_size, num_classes, height, width)
+    target: one-hot 编码的标签 (batch_size, num_classes, height, width)
+    """
+    eps = 1e-7
+    target = F.one_hot(target,num_classes=num_classes).permute(0, 3, 1, 2)
+    intersection = torch.sum(pred * target, dim=(2, 3))
+    union = torch.sum(pred + target, dim=(2, 3))
+    dice = 2.0 * intersection / (union + eps)
+    return 1 - torch.mean(dice)
+
+"""
+# 问题就出在这里，Dice损失求解过程中用到了argmax操作，argmax是不可微分的因此之后的张量的gradfn都为None，损失也就无法反向传播、、、、、、、、、、、、、、、、、、、、、、、、、、、、、、、
 def _dice_loss_fun(logits_pred, labels, n_class):
     dice_arr = []
     eps = 1e-7
@@ -73,9 +89,12 @@ def _dice_loss_fun(logits_pred, labels, n_class):
         inse = torch.sum(pred[:, i, :, :] * labels[:, i, :, :])
         union = torch.sum(pred[:, i, :, :]) + torch.sum(labels[:, i, :, :])
         dice = 2.0 * inse / (union + eps)
-        dice_arr.append(dice.item())
-    dice = torch.mean(torch.tensor(dice_arr))
+        dice_arr.append(dice)
+    dice = torch.mean(torch.stack(dice_arr))
     return 1-dice
+"""
+
+
 
 """
 params:
@@ -88,5 +107,5 @@ def task_loss(prediction, gt, n_class):
     Calculate task loss, which consists of the weighted cross entropy loss and dice loss
     """
     ce_loss = _softmax_weighted_loss(prediction, gt, n_class)
-    dice_loss = _dice_loss_fun(prediction, gt, n_class)
+    dice_loss = _dice_loss_fun(prediction, gt,n_class)
     return ce_loss, dice_loss

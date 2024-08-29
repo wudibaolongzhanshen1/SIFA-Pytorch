@@ -74,7 +74,7 @@ class DRNBlock(nn.Module):
         if self.norm_layer is not None:
             conv_block += [self.norm_layer(dim)]
         if use_relu:
-            conv_block += [nn.ReLU(True)]
+            conv_block += [nn.ReLU()]
         if self.use_dropout:
             conv_block += [nn.Dropout(0.5)]
 
@@ -138,7 +138,7 @@ class ResnetBlock(nn.Module):
 
         conv_block += [nn.Conv2d(dim, dim, kernel_size=3, padding=p),
                        norm_layer(dim),
-                       nn.ReLU(True)]
+                       nn.ReLU()]
         if use_dropout:
             conv_block += [nn.Dropout(0.5)]
 
@@ -168,7 +168,7 @@ class Encoder(nn.Module):
         self.c1 = nn.Sequential(
             nn.Conv2d(input_nc, nef, kernel_size=7, stride=1, padding=3),
             norm_layer(nef),
-            nn.ReLU(True)
+            nn.ReLU()
         )
         self.r1 = ResnetBlock(nef, padding_type='reflect', norm_layer=norm_layer, use_dropout=use_dropout)
         self.pool1 = nn.MaxPool2d(kernel_size=2, stride=2, padding=0)
@@ -195,13 +195,14 @@ class Encoder(nn.Module):
         self.c2 = nn.Sequential(
             nn.Conv2d(nef * 32, nef * 32, kernel_size=3, stride=1, padding=1),
             norm_layer(nef * 32),
-            nn.ReLU(True)
+            nn.ReLU(False)
         )
         self.c3 = nn.Sequential(
             nn.Conv2d(nef * 32, nef * 32, kernel_size=3, stride=1, padding=1),
             norm_layer(nef * 32),
-            nn.ReLU(True)
+            nn.ReLU(False)
         )
+
 
     def forward(self, x):
         o_c1 = self.c1(x)
@@ -240,7 +241,7 @@ class Decoder(nn.Module):
         self.c1 = nn.Sequential(
             nn.Conv2d(ngf * 32, ngf * 16, kernel_size=3, stride=1, padding=1),
             norm_layer(ngf * 16),
-            nn.ReLU(True)
+            nn.ReLU()
         )
         self.r1 = ResnetBlockDs(ngf * 16,ngf * 8, padding_type='reflect', norm_layer=norm_layer)
         self.r2 = ResnetBlock(ngf * 8, padding_type='reflect', norm_layer=norm_layer, use_dropout=use_dropout)
@@ -250,17 +251,17 @@ class Decoder(nn.Module):
         self.c3 = nn.Sequential(
             nn.ConvTranspose2d(ngf * 4, ngf * 2, kernel_size=3, stride=2, padding=1, output_padding=1),
             norm_layer(ngf * 2),
-            nn.ReLU(True)
+            nn.ReLU()
         )
         self.c4 = nn.Sequential(
             nn.ConvTranspose2d(ngf * 2, ngf * 2, kernel_size=3, stride=2, padding=1, output_padding=1),
             norm_layer(ngf * 2),
-            nn.ReLU(True)
+            nn.ReLU()
         )
         self.c5 = nn.Sequential(
             nn.ConvTranspose2d(ngf * 2, ngf, kernel_size=3, stride=2, padding=1, output_padding=1),
             norm_layer(ngf),
-            nn.ReLU(True)
+            nn.ReLU()
         )
         self.c6 = nn.Sequential(
             nn.Conv2d(ngf, 1, kernel_size=7, stride=1, padding=3),
@@ -295,7 +296,7 @@ class Segmenter(nn.Module):
         while current_nc > output_nc:
             next_nc = max(output_nc, current_nc // 2)  # 每次通道数减半，直到达到 output_nc
             layers.append(nn.Conv2d(current_nc, next_nc, kernel_size=3, stride=1, padding=1))
-            layers.append(nn.ReLU(inplace=True))
+            layers.append(nn.ReLU())
             current_nc = next_nc
 
         self.conv_layers = nn.Sequential(*layers)
@@ -320,7 +321,7 @@ class DiscriminatorAux(nn.Module):
         self.c4 = nn.Conv2d(ndf * 4, ndf * 8, kernel_size=self.f, stride=1, padding=0)
         self.c5 = nn.Conv2d(ndf * 8, 2, kernel_size=self.f, stride=1, padding=0)
 
-        self.leaky_relu = nn.LeakyReLU(0.2, inplace=True)
+        self.leaky_relu = nn.LeakyReLU(0.2)
         self.instance_norm = nn.InstanceNorm2d
 
     def forward(self, x):
@@ -354,7 +355,7 @@ class Discriminator(nn.Module):
         self.c4 = nn.Conv2d(ndf * 4, ndf * 8, kernel_size=self.f, stride=1, padding=0)
         self.c5 = nn.Conv2d(ndf * 8, 1, kernel_size=self.f, stride=1, padding=0)
 
-        self.leaky_relu = nn.LeakyReLU(0.2, inplace=True)
+        self.leaky_relu = nn.LeakyReLU(0.2)
         self.instance_norm = nn.InstanceNorm2d
 
     def forward(self, x):
@@ -392,7 +393,6 @@ class MyModel(torch.nn.Module):
 
         self.pixel_wise_classifier = Segmenter(input_nc=512, output_nc=5)
         self.pixel_wise_classifier_ll = Segmenter(input_nc=512, output_nc=5)
-        print()
 
     def forward(self,images_a,images_b):
         prob_real_a_is_real, prob_real_a_aux_is_real = self.discriminator_aux_s(images_a)

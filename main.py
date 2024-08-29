@@ -19,7 +19,9 @@ import tensorflow as tf
 from losses import *
 import data_loader, losses, model
 from stats_func import *
+from torchviz import make_dot
 
+torch.autograd.set_detect_anomaly(True)
 os.environ['CUDA_VISIBLE_DEVICES'] = '0'
 with open('./config_param.json') as config_file:
     config = json.load(config_file)
@@ -63,6 +65,7 @@ net = model.MyModel().to(device)
 if RESTORE_FROM is not None and RESTORE_FROM != '':
     net.load_state_dict(torch.load(RESTORE_FROM))
     print(f'load model from {config["restore_path"]}')
+
 
 
 def train(config):
@@ -118,8 +121,6 @@ def train(config):
 
     for epoch in range(MAX_STEP):
         net.train()
-        optimizer_gan.zero_grad()
-        optimizer_seg.zero_grad()
         iter_source_train_dataloader = iter(source_train_dataloader)
         iter_target_train_dataloader = iter(target_train_dataloader)
         total_loss_seg = 0.0
@@ -132,6 +133,9 @@ def train(config):
         total_lsgan_loss_p = 0.0
         output_imgs_count = 0
         for i in range(min(len_source_train_dataloader, len_target_train_dataloader)):
+            print(i)
+            optimizer_seg.zero_grad()
+            optimizer_gan.zero_grad()
             source_train_data = next(iter_source_train_dataloader)
             target_train_data = next(iter_target_train_dataloader)
             source_train_imgs, source_train_labels = source_train_data[0], source_train_data[1]
@@ -144,17 +148,18 @@ def train(config):
             if source_train_imgs.shape[0] != target_train_imgs.shape[0]:
                 break
             outputs = net(source_train_imgs, target_train_imgs)
-            losses = compute_losses_and_backward2(outputs, source_train_imgs, target_train_imgs, source_train_labels)
-            optimizer_gan.step()
-            optimizer_seg.step()
-            total_loss_seg += losses['loss_seg']
-            total_cycle_consis_loss += losses['cycle_consis_loss']
-            total_lsgan_loss_b += losses['lsgan_loss_b']
-            total_d_loss_B += losses['d_loss_B']
-            total_lsgan_loss_a += losses['lsgan_loss_a']
-            total_d_loss_A += losses['d_loss_A']
-            total_lsgan_loss_a_2 += losses['lsgan_loss_a_2']
-            total_lsgan_loss_p += losses['lsgan_loss_p']
+            losses = compute_losses_and_backward2_and_update(outputs, source_train_imgs, target_train_imgs, source_train_labels)
+            with torch.no_grad():
+                optimizer_seg.step()
+                optimizer_gan.step()
+                total_loss_seg += losses['loss_seg']
+                total_cycle_consis_loss += losses['cycle_consis_loss']
+                total_lsgan_loss_b += losses['lsgan_loss_b']
+                total_d_loss_B += losses['d_loss_B']
+                total_lsgan_loss_a += losses['lsgan_loss_a']
+                total_d_loss_A += losses['d_loss_A']
+                total_lsgan_loss_a_2 += losses['lsgan_loss_a_2']
+                total_lsgan_loss_p += losses['lsgan_loss_p']
         if epoch % log_interval == 0:
             print(
                 'iter = {0:8d}/{1:8d}, total_loss_seg = {2:.3f} total_cycle_consis_loss = {3:.3f} total_lsgan_loss_b = {4:.3f} total_d_loss_B = {5:.3f} total_lsgan_loss_a = {6:.3f} total_d_loss_A = {7:.3f} total_lsgan_loss_a_2 = {8:.3f} total_lsgan_loss_p = {9:.3f}'.format(
@@ -214,7 +219,9 @@ def train(config):
 
 
 
-def compute_losses_and_backward2(outputs, source_train_imgs, target_train_imgs, source_train_labels):
+def compute_losses_and_backward2_and_update(outputs, source_train_imgs, target_train_imgs, source_train_labels):
+    from torchviz import make_dot
+
     prob_real_a_is_real = outputs['prob_real_a_is_real']
     prob_real_b_is_real = outputs['prob_real_b_is_real']
     prob_fake_a_is_real = outputs['prob_fake_a_is_real']
@@ -251,13 +258,13 @@ def compute_losses_and_backward2(outputs, source_train_imgs, target_train_imgs, 
         param.requires_grad = True
     # 为True的params：encoder,pixel_wise_classifier,pixel_wise_classifier_ll
     # 计算x_s2t分割结果与x_s分割标签的损失(celoss和diceloss，celoss:加权交叉熵损失，diceloss对类别不平衡问题有鲁棒性)
-    ce_loss_b, dice_loss_b = task_loss(pred_mask_fake_b, source_train_labels, NUM_CLS)
+    ce_loss_fake_b, dice_loss_fake_b = task_loss(pred_mask_fake_b, source_train_labels, NUM_CLS)
     # 计算x_s2t低层级分割结果与x_s分割标签的损失
-    ce_loss_b_ll, dice_loss_b_ll = task_loss(pred_mask_fake_b_ll, source_train_labels, NUM_CLS)
-    loss_seg = ce_loss_b + dice_loss_b + ce_loss_b_ll + dice_loss_b_ll
-
+    ce_loss_fake_b_ll, dice_loss_fake_b_ll = task_loss(pred_mask_fake_b_ll, source_train_labels, NUM_CLS)
+    loss_seg = ce_loss_fake_b + dice_loss_fake_b + ce_loss_fake_b_ll + dice_loss_fake_b_ll
     # 只求encoder和classifier的梯度
-    loss_seg.backward()
+    loss_seg.backward(retain_graph=True)
+
 
     '计算两个L_cycle'
     # x_s与x_s2t2s的一致性损失(像素差值的平均)
@@ -281,7 +288,7 @@ def compute_losses_and_backward2(outputs, source_train_imgs, target_train_imgs, 
     for param in net.decoder.parameters():
         param.requires_grad = True
     # 为True的params：encoder_of_generator_t,decoder_of_generator_t,encoder,decoder
-    cycle_consis_loss.backward()
+    cycle_consis_loss.backward(retain_graph=True)
 
     """计算L_adv_t梯度"""
     # prob_fake_b_is_real: x_s2t送入判别器D_t的输出
@@ -291,7 +298,7 @@ def compute_losses_and_backward2(outputs, source_train_imgs, target_train_imgs, 
     for param in net.decoder.parameters():
         param.requires_grad = False
     # 为True的params：encoder_of_generator_t,decoder_of_generator_t
-    lsgan_loss_b.backward()
+    lsgan_loss_b.backward(retain_graph=True)
     # (prob_real_b_is_real与1平方差 + prob_fake_b_is_real与0平方差)的均值，该损失用来提高D_t的判别能力
     d_loss_B = lsgan_loss_discriminator(
         prob_real_is_real=prob_real_b_is_real,
@@ -304,7 +311,7 @@ def compute_losses_and_backward2(outputs, source_train_imgs, target_train_imgs, 
     for param in net.discriminator_t.parameters():
         param.requires_grad = True
     # 为True的params：discriminator_t
-    d_loss_B.backward()
+    d_loss_B.backward(retain_graph=True)
 
     """计算L_adv_s梯度"""
     # prob_fake_a_is_real: x_t2s送入判别器D_s的输出
@@ -318,7 +325,7 @@ def compute_losses_and_backward2(outputs, source_train_imgs, target_train_imgs, 
     for param in net.decoder.parameters():
         param.requires_grad = True
     # 为True的params：encoder,decoder
-    lsgan_loss_a.backward()
+    lsgan_loss_a.backward(retain_graph=True)
     # (prob_real_a_is_real与1平方差 + prob_fake_a_is_real与0平方差)的均值，该损失用来提高D_s的判别能力
     d_loss_A = lsgan_loss_discriminator(
         prob_real_is_real=prob_real_a_is_real,
@@ -335,7 +342,7 @@ def compute_losses_and_backward2(outputs, source_train_imgs, target_train_imgs, 
     for param in net.discriminator_aux_s.parameters():
         param.requires_grad = True
     # 为True的params：discriminator_aux_s
-    d_loss_A.backward()
+    d_loss_A.backward(retain_graph=True)
 
     """计算L_adv_s_2梯度(x_s2t2s与x_t2s)"""
     for param in net.discriminator_aux_s.parameters():
@@ -347,7 +354,7 @@ def compute_losses_and_backward2(outputs, source_train_imgs, target_train_imgs, 
     lsgan_loss_a_2 += lsgan_loss_generator(prob_cycle_a_aux_is_real)
     lsgan_loss_a_2 += lsgan_loss_generator(prob_fake_a_is_real)
     lsgan_loss_a_2 += lsgan_loss_generator(prob_fake_a_aux_is_real)
-    lsgan_loss_a_2.backward()
+    lsgan_loss_a_2.backward(retain_graph=True)
 
     """计算L_adv_p梯度"""
     # 首先，该损失鼓励生成的fake_b(x_s2t)尽量接近真实的b，也就是鼓励提升源域到目标域生成器的生成效果；而且提高encoder的从目标域提取出源域特征的能力
@@ -356,7 +363,7 @@ def compute_losses_and_backward2(outputs, source_train_imgs, target_train_imgs, 
     # prob_pred_mask_b_ll_is_real: x_s2t的分割预测低层级结果送入判别器D_t的输出
     lsgan_loss_p += lsgan_loss_generator(prob_pred_mask_fake_b_ll_is_real)
     # 为True的params：encoder
-    lsgan_loss_p.backward()
+    lsgan_loss_p.backward(retain_graph=True)
     # (x_s2t预测结果送入D_p与0平方差 + x_t预测结果送入D_p与1平方差)的均值，该损失用来提高D_p的判别能力，
     d_loss_P = lsgan_loss_discriminator(
         prob_real_is_real=prob_pred_mask_b_is_real,
@@ -372,6 +379,9 @@ def compute_losses_and_backward2(outputs, source_train_imgs, target_train_imgs, 
         param.requires_grad = True
     # 为True的params：discriminator_p
     d_loss_P.backward()
+    for param in net.parameters():
+        param.requires_grad = True
+    torch.cuda.empty_cache()
     return {
         'loss_seg': loss_seg,
         'cycle_consis_loss': cycle_consis_loss,
